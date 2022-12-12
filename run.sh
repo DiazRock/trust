@@ -1,9 +1,5 @@
 #!/bin/bash
 cargo b --release
-echo "$ext"
-if [[ $ext -ne 0 ]]; then
-        exit $ext
-fi
 sudo setcap cap_net_admin=eip ./target/release/trust
 ./target/release/trust &
 pid=$!

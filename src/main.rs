@@ -33,13 +33,13 @@ fn main() -> io::Result<()> {
                     // not tcp
                     continue;
                 }
-                match etherparse::TcpHeaderSlice::from_slice(&buf[4+iph.slice().len()..]) {
+                match etherparse::TcpHeaderSlice::from_slice(&buf[4+iph.slice().len()..nbytes]) {
                     Ok(tcph) => {
                         let datai = 4 + iph.slice().len() + tcph.slice().len();
                         connections.entry(Quad{
                             src: (src, tcph.source_port()),
                             dst: (dst, tcph.destination_port())
-                        }).or_default().on_packet(iph, tcph, &buf[datai..]);
+                        }).or_default().on_packet(iph, tcph, &buf[datai..nbytes]);
                     },
                     Err(e) => {
                         eprintln!("ignoring weird tcp packet {:?}", e);
