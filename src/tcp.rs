@@ -1,7 +1,16 @@
 use std::io::prelude::*;
 use std::cmp::{Ord, Ordering};
+use std::net::Ipv4Addr;
 use std::{io, usize};
 use std::io::Write;
+use std::collections::VecDeque;
+
+bitflags::bitflags! {
+    pub struct Available: u8 {
+        const READ = 0b00000001;
+        const WRITE = 0b00000010;
+    }
+}
 
 use etherparse::TcpHeaderSlice;
 pub enum State {
@@ -10,6 +19,12 @@ pub enum State {
     FinWait1,
     FinWait2,
     TimeWait
+}
+
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+pub struct Quad {
+    pub src: (Ipv4Addr, u16),
+    pub dst: (Ipv4Addr, u16),
 }
 
 impl State {
@@ -30,7 +45,28 @@ pub struct Connection {
     send: SendSequenceSpace,
     recv: RecvSequenceSpace,
     ip: etherparse::Ipv4Header,
-    tcp: etherparse::TcpHeader
+    tcp: etherparse::TcpHeader,
+
+    pub(crate) incoming: VecDeque<u8>,
+    pub(crate) unacked: VecDeque<u8>
+}
+
+impl Connection {
+    pub(crate) fn is_rcv_closed(&self) -> bool {
+        if let State::TimeWait = self.state {
+            true
+        } else  {
+            false
+        }
+    }
+
+    fn availability(&self ) -> Available {
+        let mut a = Available::empty();
+        if self.is_rcv_closed() || !self.incoming.is_empty() {
+            a |= Available::READ;
+        }
+        a
+    }
 }
 
 struct SendSequenceSpace {
@@ -129,7 +165,9 @@ impl Connection {
                         iph.source()[2],
                         iph.source()[3]
                     ]
-                    )
+                    ),
+                incoming: Default::default(),
+                unacked: Default::default()
             };
 
             // need to start establishing a connection
@@ -204,13 +242,13 @@ impl Connection {
             self.write(nic,&[])?;
             Ok(()) 
         }
-    pub fn on_packet<'a>(
+    pub(crate) fn on_packet<'a>(
         &mut self,
         nic: &mut tun_tap::Iface,
         iph: etherparse::Ipv4HeaderSlice<'a>,
         tcph: etherparse::TcpHeaderSlice<'a>,
         data: &'a[u8]
-    ) -> io::Result<()>{
+    ) -> io::Result<Available>{
         let ackn = tcph.acknowledgment_number();
         if !Self::is_between_wrapped(
             self.send.una, 
@@ -220,7 +258,7 @@ impl Connection {
                 // according to Reset Generation, we should send a RST
                 self.send_rst(nic);
             }
-            return Ok(())
+            return Ok(self.availability())
         }
         self.send.una = ackn;
         let seqn = tcph.sequence_number();
@@ -265,13 +303,13 @@ impl Connection {
 
         if !okay {
             self.write(nic, &[]);
-            return Ok(());
+            return Ok(self.availability());
         }
         // valid segment check
 
         self.recv.nxt = seqn.wrapping_add(slen);
         if !tcph.ack() {
-            return Ok(())
+            return Ok(self.availability())
         }
 
         let ackn = tcph.acknowledgment_number();
@@ -287,7 +325,7 @@ impl Connection {
                 }
             //expect to get an ACK for our SYN 
             if !tcph.ack() {
-                return Ok(())
+                return Ok(self.availability())
             }
             // must have ACKed our SYN, since we detected at least one acked byte, and have
             // only sent one byte (the SYN)
@@ -304,10 +342,10 @@ impl Connection {
                 self.send.una, 
                 ackn, 
                 self.send.nxt.wrapping_add(1)) {
-                return Ok(())
+                self.send.una = ackn;
+                //return Ok((self.availability()));
             }
-            self.send.una = ackn;
-            // TODO
+            // TODO: accept data
             assert!(data.is_empty());
 
             // TODO: needs to be stored in the retransmission queue
@@ -336,19 +374,7 @@ impl Connection {
                 _ => unimplemented!()
             }
         }
-        
-        // State::Closing => {
-        //     if !tcph.fin() || data.is_empty() {
-        //         unimplemented!()
-        //     }
-
-        //     self.tcp.fin = false;
-        //     self.write(nic, &[]);
-        //     self.state = State::Closing;
-        // }
-    
-
-        Ok(())
+        Ok(self.availability())
     }
     
 }
