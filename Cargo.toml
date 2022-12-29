@@ -15,3 +15,6 @@ name = "trust"
 
 [[bin]]
 name = "trust"
+
+[profile.dev]
+debug = 2
